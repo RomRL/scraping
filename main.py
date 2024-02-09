@@ -42,9 +42,7 @@ async def download_and_validate_media(session, filename, url):
         async with session.get(url) as response:
             if response.status == 200:
                 content = await response.read()
-                if is_valid_media(content):
-                    logging.debug(f"Downloaded and validated media: {filename}")
-                    return filename, content
+                return filename, content
             else:
                 logging.warning(f"Failed to download {url}. Status: {response.status}")
     except Exception as e:
@@ -81,6 +79,7 @@ async def scrape_images_and_videos(url):
         else:
             logging.error(f"Failed to fetch content from {url}. Status: {response.status}")
             raise HTTPException(status_code=500, detail=f"Failed to fetch content from {url}")
+
 
 
 
