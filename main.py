@@ -1,54 +1,108 @@
+import logging
 import os
-import urllib.request
-from fastapi import FastAPI, HTTPException, Depends, Query
+import io
+import asyncio
+import aiohttp
+from fastapi import FastAPI, HTTPException, Query
 from urllib.parse import urljoin, urlparse
 from html.parser import HTMLParser
+import zipfile
+import uuid
+from fastapi.responses import StreamingResponse
+from PIL import Image
 
 app = FastAPI()
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
+
 class ImageVideoParser(HTMLParser):
-    def __init__(self, url, output_folder):
+    def __init__(self, url):
         super().__init__()
         self.url = url
-        self.output_folder = output_folder
+        self.downloaded_files = []
 
     def handle_starttag(self, tag, attrs):
         if tag == 'img' or tag == 'video':
-            for attr, value in attrs:
-                if attr == 'src':
-                    media_url = urljoin(self.url, value)
-                    self.download_file(media_url)
+            for attr_tuple in attrs:
+                if len(attr_tuple) == 2:
+                    attr, value = attr_tuple
+                    if attr == 'src':
+                        media_url = urljoin(self.url, value)
+                        self.add_downloaded_file(os.path.basename(urlparse(media_url).path), media_url)
 
-    def download_file(self, url):
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-        request = urllib.request.Request(url, headers=headers)
+    def add_downloaded_file(self, filename, url):
+        self.downloaded_files.append((filename, url))
 
-        try:
-            response = urllib.request.urlopen(request)
-            if response.getcode() == 200:
-                file_name = os.path.join(self.output_folder, os.path.basename(urlparse(url).path))
-                with open(file_name, 'wb') as file:
-                    file.write(response.read())
-                print(f"Downloaded: {file_name}")
+
+async def download_and_validate_image(session, filename, url):
+    try:
+        async with session.get(url) as response:
+            if response.status == 200:
+                content = await response.read()
+                if is_valid_image(content):
+                    logging.debug(f"Downloaded and validated image: {filename}")
+                    return filename, content
             else:
-                print(f"Failed to download {url}")
-        except Exception as e:
-            print(f"Failed to download {url}: {e}")
+                logging.warning(f"Failed to download {url}. Status: {response.status}")
+    except Exception as e:
+        logging.error(f"Failed to download {url}: {e}")
+    return None
+
+
+async def scrape_images_and_videos(url):
+    async with aiohttp.ClientSession() as session:
+        logging.info(f"Fetching content from: {url}")
+        response = await session.get(url)
+        if response.status == 200:
+            content = await response.text()
+            parser = ImageVideoParser(url)
+            parser.feed(content)
+
+            tasks = [download_and_validate_image(session, f"{str(uuid.uuid4())}_{filename}", url) for filename, url in parser.downloaded_files]
+            downloaded_images = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Create a zip file in memory
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+                for result in downloaded_images:
+                    if isinstance(result, tuple):
+                        filename, content = result
+                        zip_file.writestr(filename, content)
+
+            # Rewind the buffer to the beginning
+            zip_buffer.seek(0)
+
+            logging.info("Scraping and processing completed.")
+            return StreamingResponse(zip_buffer, media_type='application/zip',
+                                     headers={'Content-Disposition': 'attachment; filename=downloaded_files.zip'})
+        else:
+            logging.error(f"Failed to fetch content from {url}. Status: {response.status}")
+            raise HTTPException(status_code=500, detail=f"Failed to fetch content from {url}")
+
+
+def is_valid_image(content):
+    try:
+        Image.open(io.BytesIO(content))
+        return True
+    except Exception as e:
+        logging.debug(f"Failed to open image: {e}")
+        return False
+
 
 @app.get("/scrape")
-async def scrape_images_and_videos(url: str = Query(..., title="Target URL"), output_folder: str = "output_folder"):
-    try:
-        response = urllib.request.urlopen(url)
-        if response.getcode() == 200:
-            content = response.read().decode('utf-8')
-            parser = ImageVideoParser(url, output_folder)
-            parser.feed(content)
-            return {"message": "Scraping initiated. Check console for details."}
-        else:
-            raise HTTPException(status_code=500, detail=f"Failed to fetch content from {url}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch content from {url}: {e}")
+async def scrape_images_and_videos_api(url: str = Query(..., title="Target URL")):
+    return await scrape_images_and_videos(url)
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=8000,
+        log_level="info",
+        reload=True
+    )
