@@ -24,11 +24,12 @@ class ImageVideoParser(HTMLParser):
         self.downloaded_files = []
 
     def handle_starttag(self, tag, attrs):
-        if tag == 'img' or tag == 'video':
+        if tag in ('img', 'video'):
             for attr_tuple in attrs:
                 if len(attr_tuple) == 2:
                     attr, value = attr_tuple
-                    if attr == 'src':
+                    # Consider multiple attributes that may contain the source URL
+                    if attr in ('src', 'poster', 'data-src'):
                         media_url = urljoin(self.url, value)
                         self.add_downloaded_file(os.path.basename(urlparse(media_url).path), media_url)
 
@@ -36,13 +37,13 @@ class ImageVideoParser(HTMLParser):
         self.downloaded_files.append((filename, url))
 
 
-async def download_and_validate_image(session, filename, url):
+async def download_and_validate_media(session, filename, url):
     try:
         async with session.get(url) as response:
             if response.status == 200:
                 content = await response.read()
-                if is_valid_image(content):
-                    logging.debug(f"Downloaded and validated image: {filename}")
+                if is_valid_media(content):
+                    logging.debug(f"Downloaded and validated media: {filename}")
                     return filename, content
             else:
                 logging.warning(f"Failed to download {url}. Status: {response.status}")
@@ -60,13 +61,13 @@ async def scrape_images_and_videos(url):
             parser = ImageVideoParser(url)
             parser.feed(content)
 
-            tasks = [download_and_validate_image(session, f"{str(uuid.uuid4())}_{filename}", url) for filename, url in parser.downloaded_files]
-            downloaded_images = await asyncio.gather(*tasks, return_exceptions=True)
+            tasks = [download_and_validate_media(session, f"{str(uuid.uuid4())}_{filename}", url) for filename, url in parser.downloaded_files]
+            downloaded_media = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Create a zip file in memory
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-                for result in downloaded_images:
+                for result in downloaded_media:
                     if isinstance(result, tuple):
                         filename, content = result
                         zip_file.writestr(filename, content)
@@ -82,27 +83,9 @@ async def scrape_images_and_videos(url):
             raise HTTPException(status_code=500, detail=f"Failed to fetch content from {url}")
 
 
-def is_valid_image(content):
-    try:
-        Image.open(io.BytesIO(content))
-        return True
-    except Exception as e:
-        logging.debug(f"Failed to open image: {e}")
-        return False
 
 
 @app.get("/scrape")
 async def scrape_images_and_videos_api(url: str = Query(..., title="Target URL")):
     return await scrape_images_and_videos(url)
 
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(
-        "main:app",
-        host="127.0.0.1",
-        port=8000,
-        log_level="info",
-        reload=True
-    )
