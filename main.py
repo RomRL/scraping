@@ -1,16 +1,14 @@
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse, JSONResponse
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse
+import aiohttp
+import asyncio
+import io
 import logging
 import os
-import io
-import asyncio
-import aiohttp
-from fastapi import FastAPI, HTTPException, Query
-from urllib.parse import urljoin, urlparse
-from html.parser import HTMLParser
 import zipfile
 import uuid
-from fastapi.responses import StreamingResponse
-from PIL import Image
-from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
@@ -60,10 +58,14 @@ async def scrape_images_and_videos(url):
             parser = ImageVideoParser(url)
             parser.feed(content)
 
-            tasks = [download_and_validate_media(session, f"{str(uuid.uuid4())}_{filename}", url) for filename, url in parser.downloaded_files]
+            tasks = [download_and_validate_media(session, f"{str(uuid.uuid4())}_{filename}", url) for filename, url in
+                     parser.downloaded_files]
             downloaded_media = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Create a zip file in memory
+            # Extract the first word after "www" from the URL
+            domain_name = urlparse(url).netloc.split('.')[1]
+
+            # Create a zip file in memory with the extracted domain name as the prefix
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
                 for result in downloaded_media:
@@ -76,18 +78,17 @@ async def scrape_images_and_videos(url):
 
             logging.info("Scraping and processing completed.")
             return StreamingResponse(zip_buffer, media_type='application/zip',
-                                     headers={'Content-Disposition': 'attachment; filename=downloaded_files.zip'})
+                                     headers={
+                                         'Content-Disposition': f'attachment; filename={domain_name}_downloaded_files.zip'})
         else:
             logging.error(f"Failed to fetch content from {url}. Status: {response.status}")
             raise HTTPException(status_code=500, detail=f"Failed to fetch content from {url}")
 
 
-
-
-
 @app.get("/scrape")
 async def scrape_images_and_videos_api(url: str = Query(..., title="Target URL")):
     return await scrape_images_and_videos(url)
+
 
 @app.get("/health", status_code=200)
 async def health_check():
