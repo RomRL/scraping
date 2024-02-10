@@ -10,6 +10,7 @@ import zipfile
 import uuid
 from fastapi.responses import StreamingResponse
 from PIL import Image
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
@@ -88,3 +89,6 @@ async def scrape_images_and_videos(url):
 async def scrape_images_and_videos_api(url: str = Query(..., title="Target URL")):
     return await scrape_images_and_videos(url)
 
+@app.get("/health", status_code=200)
+async def health_check():
+    return JSONResponse(content={"status": "ok"})
